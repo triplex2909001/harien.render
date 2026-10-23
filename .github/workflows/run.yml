@@ -1,0 +1,75 @@
+name: run
+
+on:
+  workflow_dispatch:
+    inputs:
+      ep_id:
+        description: "Episode ID"
+        required: true
+        default: "T01_EP001_A1"
+      level:
+        description: "CEFR Level"
+        required: false
+        default: "A1"
+      tab:
+        description: "Sheet Tab"
+        required: false
+        default: "1_Broadcast_Schedule"
+      row_id:
+        description: "Row ID"
+        required: false
+        default: "1"
+      force:
+        description: "Force re-render existing scenes"
+        required: false
+        default: "false"
+  repository_dispatch:
+    types: [run]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      EP_ID: ${{ github.event.inputs.ep_id || github.event.client_payload.ep_id || 'T01_EP001_A1' }}
+      LEVEL: ${{ github.event.inputs.level || github.event.client_payload.level || 'A1' }}
+      TAB: ${{ github.event.inputs.tab || github.event.client_payload.tab || '1_Broadcast_Schedule' }}
+      ROW_ID: ${{ github.event.inputs.row_id || github.event.client_payload.row_id || '1' }}
+      FORCE: ${{ github.event.inputs.force || github.event.client_payload.force || 'false' }}
+      GDRIVE_PRODUCTION_FOLDER_ID: ${{ secrets.GDRIVE_PRODUCTION_FOLDER_ID }}
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Chromium, FFmpeg, Fonts & rclone
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg rclone fonts-noto-core fonts-liberation fonts-dejavu-core chromium-browser || sudo apt-get install -y ffmpeg rclone fonts-noto-core fonts-liberation fonts-dejavu-core chromium
+          python3 -m pip install --upgrade pip pillow numpy requests google-auth
+
+      - name: Configure ephemeral rclone in RAM
+        env:
+          RCLONE_CONF_B64: ${{ secrets.GDRIVE_RCLONE_CONF }}
+          SA_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p ~/.config/rclone /dev/shm/render
+          if [ -n "$RCLONE_CONF_B64" ]; then
+            echo "$RCLONE_CONF_B64" | base64 -d > ~/.config/rclone/rclone.conf 2>/dev/null || echo "$RCLONE_CONF_B64" > ~/.config/rclone/rclone.conf
+          fi
+          if [ -n "$SA_JSON" ]; then
+            echo "$SA_JSON" > /dev/shm/render/sa.json
+            echo "GOOGLE_APPLICATION_CREDENTIALS=/dev/shm/render/sa.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run per-scene checkpointed HTML5 9x16 renderer
+        run: |
+          ARGS="--ep-id ${EP_ID} --level ${LEVEL}"
+          if [ "${FORCE}" = "true" ]; then ARGS="${ARGS} --force"; fi
+          python3 runner.py ${ARGS}
